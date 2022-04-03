@@ -3,4 +3,4 @@ project(cinema_server)
 
 set(CMAKE_CXX_STANDARD 17)
 
-add_executable(cinema_server src/ticket_server.cpp)
+add_executable(ticket_server src/ticket_server.cpp src/flags.h src/ensure.h)
