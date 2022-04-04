@@ -53,12 +53,11 @@ private:
     void bind_socket(uint16_t port) {
         ensure(MIN_PORT <= port && port <= MAX_PORT, "Invalid port value");
         this->socket_fd = socket(AF_INET, SOCK_DGRAM, 0); /* IPv4 UDP socket */
-        ensure(this->socket_fd > 0, "Failed to create a socket with port", port);
         ensure_errno(this->bind_address(create_address(port)), "Failed to bind address");
     }
 
     int bind_address(const sockaddr_in& address) const {
-        ensure(this->socket_fd > 0, "Cannot bind address to uninitialized socket");
+        ensure(this->socket_fd > 0, "Failed to create a socket with port");
         return bind(this->socket_fd, (sockaddr*) &address, (socklen_t) sizeof(address));
     }
 
