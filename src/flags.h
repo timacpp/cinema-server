@@ -9,7 +9,11 @@
 
 #include "ensure.h"
 
+// TODO: improve parsing by looking at end: 1a
 namespace {
+    /* Numerical base of input flag values */
+    constexpr int IN_BASE = 10;
+
     /* Number of arguments per flag: name and value */
     constexpr size_t FLAG_DATA_LEN = 2;
 
@@ -18,10 +22,12 @@ namespace {
         if constexpr (std::is_same_v<T, std::string>) {
             return value;
         } else if constexpr (std::is_arithmetic_v<T>) {
-            int64_t parsed;
-            std::stringstream(value) >> parsed;
+            char* end;
+            int64_t parsed = strtoll(value.c_str(), &end, IN_BASE);
 
-            if (parsed > static_cast<int64_t>(std::numeric_limits<T>::max())) {
+            if (*end != 0) {
+                throw std::invalid_argument("Flag illegal value");
+            } else if (parsed > static_cast<int64_t>(std::numeric_limits<T>::max())) {
                 throw std::invalid_argument("Flag value overflow");
             } else if (parsed < static_cast<int64_t>(std::numeric_limits<T>::min())) {
                 throw std::invalid_argument("Flag value underflow");
@@ -62,8 +68,9 @@ inline flag_map create_flag_map(int argc, char** argv, const std::string& names)
         std::string name(argv[i]);
 
         ensure(std::regex_match(name, name_regex), "Unexpected flag", name);
-        ensure(i + 1 < argc, "No value for flag", name);
         ensure(flags.find(name) == flags.end(), "Flag", name, "is repeated");
+        ensure(i + 1 < argc, "No value for flag", name);
+
         flags[name] = argv[i + 1];
     }
 
