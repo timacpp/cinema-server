@@ -17,4 +17,13 @@ inline void quit(const Arg& head, const Args&... args) {
     ensure(false, head, args...);
 }
 
+template<typename Arg, typename... Args>
+inline void ensure_errno(int expr, const Arg& head, const Args&... args) {
+    errno = 0;
+    if (static_cast<void>(expr); errno != 0) {
+        quit(head, args...);
+    }
+}
+
+
 #endif //CINEMA_SERVER_ENSURE_H
