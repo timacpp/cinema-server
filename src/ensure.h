@@ -5,8 +5,7 @@
 
 template<typename Arg, typename... Args>
 inline void display(const std::string& type, const Arg& head, const Args&... args) {
-    ((std::cerr << type + ": " << head) <<
-            ... << (std::cerr << " ", args)) << std::endl;
+    ((std::cerr << type + ": " << head) << ... << (std::cerr << " ", args)) << std::endl;
 }
 
 template<typename Arg, typename... Args>
