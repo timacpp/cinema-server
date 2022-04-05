@@ -9,7 +9,6 @@
 
 #include "ensure.h"
 
-// TODO: improve parsing by looking at end: 1a
 namespace {
     /* Numerical base of input flag values */
     constexpr int IN_BASE = 10;
@@ -68,7 +67,6 @@ inline flag_map create_flag_map(int argc, char** argv, const std::string& names)
         std::string name(argv[i]);
 
         ensure(std::regex_match(name, name_regex), "Unexpected flag", name);
-        ensure(flags.find(name) == flags.end(), "Flag", name, "is repeated");
         ensure(i + 1 < argc, "No value for flag", name);
 
         flags[name] = argv[i + 1];
