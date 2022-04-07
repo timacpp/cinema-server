@@ -35,8 +35,8 @@ inline size_t buffer_write(char* dest, Arg&& src_head, Args&&... src_tail) {
 }
 
 template<typename T>
-inline T buffer_read(const char* buffer) {
-    return reinterpret_cast<T*>(buffer);
+inline T* buffer_read(char* buffer, size_t offset = 0) {
+    return reinterpret_cast<T*>(buffer + offset);
 }
 
 #endif //CINEMA_SERVER_BUFFER_H
