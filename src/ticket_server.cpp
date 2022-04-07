@@ -8,11 +8,44 @@
 #include "ensure.h"
 #include "buffer.h"
 
-// TODO: wrap requests in class
+namespace {
+    template<typename T, std::enable_if_t<std::is_arithmetic_v<T>, bool> = true>
+    constexpr bool is_between(T value, T min, T max) noexcept {
+        return value >= min && value <= max;
+    }
+}
+
+struct ClientRequest {
+public:
+    static constexpr size_t GET_EVENTS_LEN      = 1;
+    static constexpr size_t GET_RESERVATION_LEN = 7;
+    static constexpr size_t GET_TICKETS_LEN     = 53;
+
+    enum Type : uint8_t {
+        GET_EVENTS      = 1,
+        GET_RESERVATION = 3,
+        GET_TICKETS     = 5
+    };
+};
+
+struct ServerResponse {
+public:
+    static constexpr size_t MAX_EVENT_DATA = 262;
+
+    enum Type : uint8_t {
+        EVENTS      = 2,
+        RESERVATION = 4,
+        TICKETS     = 6,
+        BAD_REQUEST = 255
+    };
+
+};
 
 class TicketServer {
 public:
     using desclen_t = uint8_t;
+
+    static constexpr size_t MAX_DATAGRAM = 65507;
 
     static constexpr uint32_t MIN_TIMEOUT  = 1;
     static constexpr uint32_t MAX_TIMEOUT  = 86400;
@@ -21,26 +54,6 @@ public:
     static constexpr uint16_t MIN_PORT  = 0;
     static constexpr uint16_t MAX_PORT  = 65535;
     static constexpr uint16_t DFLT_PORT = 2022;
-
-    static constexpr size_t MAX_DATAGRAM   = 65507;
-    static constexpr size_t MAX_EVENT_DATA = 262;
-
-    static constexpr size_t GET_EVENTS_LEN = 1;
-    static constexpr size_t GET_RESERVATION_LEN = 7;
-    static constexpr size_t GET_TICKETS_LEN = 53;
-
-    enum Request : uint8_t {
-        GET_EVENTS = 1,
-        GET_RESERVATION = 3,
-        GET_TICKETS = 5
-    };
-
-    enum Response : uint8_t {
-        EVENTS = 2,
-        RESERVATION = 4,
-        TICKETS = 6,
-        BAD_REQUEST = 255
-    };
 
     TicketServer(const std::string& file, uint16_t port, uint32_t timeout) {
         this->bind_socket(port);
@@ -80,8 +93,7 @@ private:
     std::unordered_map<std::string, std::pair<uint32_t, uint16_t>> reserved;
 
     void set_timeout(uint32_t _timeout) {
-        ensure(MIN_TIMEOUT <= _timeout
-               && _timeout <= MAX_TIMEOUT, "Invalid timeout value");
+        ensure(is_between(_timeout, MIN_TIMEOUT, MAX_TIMEOUT), "Invalid timeout value");
         this->timeout = _timeout;
     };
 
@@ -99,7 +111,7 @@ private:
     }
 
     void bind_socket(uint16_t port) {
-        ensure(MIN_PORT <= port && port <= MAX_PORT, "Invalid port value");
+        ensure(is_between(port, MIN_PORT, MAX_PORT), "Invalid port value");
         this->socket_fd = socket(AF_INET, SOCK_DGRAM, 0); /* IPv4 UDP socket */
         ensure_errno(this->bind_address(create_address(port)), "Failed to bind address");
     }
@@ -108,16 +120,6 @@ private:
         ensure(this->socket_fd > 0, "Failed to create a socket with port");
         auto address_len = static_cast<socklen_t>(sizeof(address));
         return bind(this->socket_fd, (sockaddr*) &address, address_len);
-    }
-
-    static sockaddr_in create_address(uint16_t port) {
-        sockaddr_in address;
-
-        address.sin_family = AF_INET;
-        address.sin_port = htons(port);
-        address.sin_addr.s_addr = htonl(INADDR_ANY);
-
-        return address;
     }
 
     void clear_buffer() {
@@ -148,13 +150,13 @@ private:
     void handle_request(sockaddr_in* client_address, size_t request_len) {
         try {
             switch (buffer[0]) {
-                case GET_EVENTS:
+                case ClientRequest::GET_EVENTS:
                     this->try_send_events(client_address, request_len);
                     break;
-                case GET_RESERVATION:
+                case ClientRequest::GET_RESERVATION:
                     this->try_reserve_tickets(client_address, request_len);
                     break;
-                case GET_TICKETS:
+                case ClientRequest::GET_TICKETS:
                     this->try_send_tickets(client_address, request_len);
                     break;
                 default:
@@ -166,7 +168,7 @@ private:
     }
 
     void try_send_events(sockaddr_in* client_address, size_t request_len) {
-        if (request_len > GET_EVENTS_LEN) {
+        if (request_len > ClientRequest::GET_EVENTS_LEN) {
             throw std::invalid_argument("GET_EVENTS request is too long");
         }
 
@@ -174,10 +176,10 @@ private:
     }
 
     void send_events(sockaddr_in* client_address) {
-        size_t packed_bytes = buffer_write<Response>(buffer, EVENTS);
+        size_t packed_bytes = buffer_write(buffer, ServerResponse::EVENTS);
 
         for (auto& [event, id] : events) {
-            char event_data[MAX_EVENT_DATA];
+            char event_data[ServerResponse::MAX_EVENT_DATA];
             size_t event_bytes = buffer_write(
                     event_data, htonl(id), htons(tickets[id]),
                     static_cast<desclen_t>(event.size()),
@@ -199,6 +201,16 @@ private:
 
     void try_send_tickets(sockaddr_in* client_address, size_t request_len) {
 
+    }
+
+    static sockaddr_in create_address(uint16_t port) {
+        sockaddr_in address;
+
+        address.sin_family = AF_INET;
+        address.sin_port = htons(port);
+        address.sin_addr.s_addr = htonl(INADDR_ANY);
+
+        return address;
     }
 };
 
