@@ -42,18 +42,24 @@ public:
 };
 
 class TicketServer {
-public:
-    using desclen_t = uint8_t;
+    using desclen_t       = uint8_t;
+    using tickets_t   = uint16_t;
+    using event_id        = uint32_t;
+    using reservation_id  = uint32_t;
+    using address_t       = sockaddr_in*;
+    using reservation_data = std::pair<event_id, tickets_t>;
 
+    static constexpr uint16_t MAX_TICKETS = 9357;
     static constexpr size_t MAX_DATAGRAM = 65507;
 
+public:
     static constexpr uint32_t MIN_TIMEOUT  = 1;
     static constexpr uint32_t MAX_TIMEOUT  = 86400;
-    static constexpr uint32_t DFLT_TIMEOUT = 5;
+    static constexpr uint32_t DEFAULT_TIMEOUT = 5;
 
     static constexpr uint16_t MIN_PORT  = 0;
     static constexpr uint16_t MAX_PORT  = 65535;
-    static constexpr uint16_t DFLT_PORT = 2022;
+    static constexpr uint16_t DEFAULT_PORT = 2022;
 
     TicketServer(const std::string& file, uint16_t port, uint32_t timeout) {
         this->bind_socket(port);
@@ -84,13 +90,23 @@ public:
         }
     }
 
+    static sockaddr_in create_address(uint16_t port) {
+        sockaddr_in address{};
+
+        address.sin_family = AF_INET;
+        address.sin_port = htons(port);
+        address.sin_addr.s_addr = htonl(INADDR_ANY);
+
+        return address;
+    }
+
 private:
     uint32_t timeout;
     int socket_fd = -1;
     char buffer[MAX_DATAGRAM];
-    std::unordered_map<std::string, uint32_t> events;
-    std::unordered_map<uint32_t, uint16_t> tickets;
-    std::unordered_map<std::string, std::pair<uint32_t, uint16_t>> reserved;
+    std::unordered_map<std::string, event_id> events;
+    std::unordered_map<event_id, tickets_t> tickets;
+    std::unordered_map<reservation_id, reservation_data> reserved;
 
     void set_timeout(uint32_t _timeout) {
         ensure(is_between(_timeout, MIN_TIMEOUT, MAX_TIMEOUT), "Invalid timeout value");
@@ -102,7 +118,7 @@ private:
         std::string film, tickets_count;
         ensure(file.is_open(), "File", file_db, "does not exist");
 
-        for (uint32_t identity_key = 0; getline(file, film); identity_key++) {
+        for (event_id identity_key = 0; getline(file, film); identity_key++) {
             if (getline(file, tickets_count)) {
                 events[film] = identity_key;
                 std::stringstream(tickets_count) >> tickets[identity_key];
@@ -126,38 +142,42 @@ private:
         std::fill_n(buffer, MAX_DATAGRAM, '\0');
     }
 
-    size_t read_message(sockaddr_in* client_address) {
-        auto address_len = static_cast<socklen_t>(sizeof(*client_address));
+    static bool valid_tickets_count(tickets_t requested, tickets_t available) {
+        return is_between(requested, static_cast<uint16_t>(1), std::min(MAX_TICKETS, available));
+    }
+
+    size_t read_message(address_t client) {
+        auto address_len = static_cast<socklen_t>(sizeof(*client));
         ssize_t message_len = recvfrom(
                 socket_fd, buffer, MAX_DATAGRAM, 0,
-                (sockaddr *) client_address, &address_len
+                (sockaddr *) client, &address_len
         );
 
         ensure(message_len >= 0, "Failed to receive a message");
         return static_cast<size_t>(message_len);
     }
 
-    void send_message(const sockaddr_in *client_address, size_t length = MAX_DATAGRAM) {
-        auto address_len = static_cast<socklen_t>(sizeof(*client_address));
+    void send_message(address_t client, size_t length = MAX_DATAGRAM) {
+        auto address_len = static_cast<socklen_t>(sizeof(*client));
         ssize_t sent_len = sendto(
                 socket_fd, buffer, length, 0,
-                (sockaddr*) client_address, address_len
+                (sockaddr*) client, address_len
         );
 
         ensure(sent_len == static_cast<ssize_t>(length), "Failed to send a message");
     }
 
-    void handle_request(sockaddr_in* client_address, size_t request_len) {
+    void handle_request(address_t client, size_t request_len) {
         try {
             switch (buffer[0]) {
                 case ClientRequest::GET_EVENTS:
-                    this->try_send_events(client_address, request_len);
+                    this->try_send_events(client, request_len);
                     break;
                 case ClientRequest::GET_RESERVATION:
-                    this->try_reserve_tickets(client_address, request_len);
+                    this->try_reserve_tickets(client, request_len);
                     break;
                 case ClientRequest::GET_TICKETS:
-                    this->try_send_tickets(client_address, request_len);
+                    this->try_send_tickets(client, request_len);
                     break;
                 default:
                     throw std::invalid_argument("Unknown request type");
@@ -167,23 +187,23 @@ private:
         }
     }
 
-    void try_send_events(sockaddr_in* client_address, size_t request_len) {
+    void try_send_events(address_t client, size_t request_len) {
         if (request_len > ClientRequest::GET_EVENTS_LEN) {
             throw std::invalid_argument("GET_EVENTS request is too long");
         }
 
-        this->send_events(client_address);
+        this->send_events(client);
     }
 
-    void send_events(sockaddr_in* client_address) {
+    void send_events(address_t client) {
         size_t packed_bytes = buffer_write(buffer, ServerResponse::EVENTS);
 
-        for (auto& [event, id] : events) {
+        for (auto& [description, id] : events) {
             char event_data[ServerResponse::MAX_EVENT_DATA];
             size_t event_bytes = buffer_write(
                     event_data, htonl(id), htons(tickets[id]),
-                    static_cast<desclen_t>(event.size()),
-                    const_cast<char*>(event.c_str())
+                    static_cast<desclen_t>(description.size()),
+                    const_cast<char*>(description.c_str())
             );
 
             if (event_bytes + packed_bytes > MAX_DATAGRAM)
@@ -192,25 +212,43 @@ private:
             packed_bytes += buffer_write_n(buffer + packed_bytes, event_data, event_bytes);
         }
 
-        this->send_message(client_address, packed_bytes);
+        this->send_message(client, packed_bytes);
     }
 
-    void try_reserve_tickets(sockaddr_in* client_address, size_t request_len) {
+    void try_reserve_tickets(address_t client, size_t request_len) {
+        if (request_len > ClientRequest::GET_RESERVATION_LEN) {
+            throw std::invalid_argument("GET_EVENTS request is too long");
+        }
+
+        auto event = htonl(*buffer_read<event_id>(buffer, 1));
+        auto tickets_count = htons(*buffer_read<tickets_t>(buffer, 1 + sizeof(event)));
+        auto ticket_it = tickets.find(event);
+
+        if (ticket_it == tickets.end() || !valid_tickets_count(tickets_count, ticket_it->second)) {
+            this->send_bad_request(client, event);
+        }
+
+        this->reserve_tickets(client, event, tickets_count);
+    }
+
+    void reserve_tickets(address_t client, event_id event, tickets_t tickets_count) {
+//        size_t bytes = buffer_write(buffer, REQ)
+    }
+
+    void try_send_tickets(address_t client, size_t request_len) {
 
     }
 
-    void try_send_tickets(sockaddr_in* client_address, size_t request_len) {
+    template<typename T>
+    void send_bad_request(address_t client_address, T arg) {
+        if constexpr (std::is_same_v<T, tickets_t>) {
+            warn("Illegal amount of tickets", arg);
+        } else {
+            warn("Unknown event", arg);
+        }
 
-    }
-
-    static sockaddr_in create_address(uint16_t port) {
-        sockaddr_in address;
-
-        address.sin_family = AF_INET;
-        address.sin_port = htons(port);
-        address.sin_addr.s_addr = htonl(INADDR_ANY);
-
-        return address;
+        size_t bytes = buffer_write(buffer, ServerResponse::BAD_REQUEST, arg);
+        this->send_message(client_address, bytes);
     }
 };
 
@@ -219,8 +257,8 @@ int main(int argc, char** argv) {
 
     TicketServer server(
         get_flag_required<std::string>(flags, "-f"),
-        get_flag<uint16_t>(flags, "-p").value_or(TicketServer::DFLT_PORT),
-        get_flag<uint32_t>(flags, "-t").value_or(TicketServer::DFLT_TIMEOUT)
+        get_flag<uint16_t>(flags, "-p").value_or(TicketServer::DEFAULT_PORT),
+        get_flag<uint32_t>(flags, "-t").value_or(TicketServer::DEFAULT_TIMEOUT)
     );
 
     server.start();
