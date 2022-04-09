@@ -18,7 +18,7 @@ namespace {
 
     template<typename T>
     inline T convert_flag(const std::string& value) {
-        if constexpr (std::is_same_v<T, std::string>) {
+        if constexpr (std::is_convertible_v<T, std::string>) {
             return value;
         } else if constexpr (std::is_arithmetic_v<T>) {
             char* end;
