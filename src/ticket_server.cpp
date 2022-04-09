@@ -1,8 +1,10 @@
+#include <set>
 #include <fstream>
+
+#include <unistd.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <unistd.h>
 
 #include "flags.h"
 #include "ensure.h"
@@ -16,50 +18,43 @@ namespace {
 }
 
 struct ClientRequest {
-public:
+    /** Message length of GET_EVENTS request */
     static constexpr size_t GET_EVENTS_LEN      = 1;
+
+    /** Message length of GET_RESERVATION request */
     static constexpr size_t GET_RESERVATION_LEN = 7;
+
+    /** Message length of GET_TICKETS request */
     static constexpr size_t GET_TICKETS_LEN     = 53;
 
     enum Type : uint8_t {
-        GET_EVENTS      = 1,
-        GET_RESERVATION = 3,
-        GET_TICKETS     = 5
+        GET_EVENTS      = 1, /** Request to list available events */
+        GET_RESERVATION = 3, /** Request to reserve tickets to an event */
+        GET_TICKETS     = 5  /** Request to buy reserved tickets */
     };
 };
 
 struct ServerResponse {
-public:
+    /** Maximum buffer size to store a single event information */
     static constexpr size_t MAX_EVENT_DATA = 262;
 
     enum Type : uint8_t {
-        EVENTS      = 2,
-        RESERVATION = 4,
-        TICKETS     = 6,
-        BAD_REQUEST = 255
+        EVENTS      = 2,  /** Response to list available requests */
+        RESERVATION = 4,  /** Response to confirm ticket reservation */
+        TICKETS     = 6,  /** Response to send bought tickets */
+        BAD_REQUEST = 255 /** Response to an invalid request */
     };
-
 };
 
 class TicketServer {
-    using desclen_t       = uint8_t;
-    using tickets_t   = uint16_t;
-    using event_id        = uint32_t;
-    using reservation_id  = uint32_t;
-    using address_t       = sockaddr_in*;
-    using reservation_data = std::pair<event_id, tickets_t>;
-
-    static constexpr uint16_t MAX_TICKETS = 9357;
-    static constexpr size_t MAX_DATAGRAM = 65507;
-
 public:
-    static constexpr uint32_t MIN_TIMEOUT  = 1;
-    static constexpr uint32_t MAX_TIMEOUT  = 86400;
+    static constexpr uint32_t MIN_TIMEOUT     = 1;
     static constexpr uint32_t DEFAULT_TIMEOUT = 5;
+    static constexpr uint32_t MAX_TIMEOUT     = 86400;
 
-    static constexpr uint16_t MIN_PORT  = 0;
-    static constexpr uint16_t MAX_PORT  = 65535;
+    static constexpr uint16_t MIN_PORT     = 0;
     static constexpr uint16_t DEFAULT_PORT = 2022;
+    static constexpr uint16_t MAX_PORT     = 65535;
 
     TicketServer(const std::string& file, uint16_t port, uint32_t timeout) {
         this->bind_socket(port);
@@ -101,12 +96,37 @@ public:
     }
 
 private:
-    uint32_t timeout;
-    int socket_fd = -1;
-    char buffer[MAX_DATAGRAM];
-    std::unordered_map<std::string, event_id> events;
-    std::unordered_map<event_id, tickets_t> tickets;
-    std::unordered_map<reservation_id, reservation_data> reserved;
+    using desclen_t        = uint8_t;
+    using tickets_t        = uint16_t;
+    using event_id         = uint32_t;
+    using reservation_id   = uint32_t;
+    using seconds_t        = uint64_t;
+    using addr_ptr         = sockaddr_in*;
+    using reservation_data = std::pair<event_id, tickets_t>;
+
+    /** Server buffer size */
+    static constexpr size_t MAX_DATAGRAM  = 65507;
+
+    /** Length of a cookie to confirm a reservation */
+    static constexpr size_t COOKIE_LEN    = 384;
+
+    /** Upperbound of tickets to reserve in a single request */
+    static constexpr tickets_t MAX_TICKETS = 9357;
+
+    /** Minimal possible ID of a reservation */
+    static constexpr reservation_id MIN_RESERVATION_ID = 1000000;
+
+    int socket_fd = -1; /** Socket of communication */
+    char buffer[MAX_DATAGRAM]; /** Communication buffer */
+
+    std::unordered_map<std::string, event_id> events; /** Mapping of event names to their id's */
+    std::unordered_map<event_id, tickets_t> tickets; /** Number of available tickets for events */
+
+    uint32_t timeout; /** Time for a reservation to be valid */
+    std::map<reservation_id, reservation_data> reserved; /** Reserved tickets for events */
+    std::unordered_map<reservation_id, std::string> cookies; /** Cookies to validate reservation */
+
+    std::set<std::string> purchased; /** Codes of purchased tickets */
 
     void set_timeout(uint32_t _timeout) {
         ensure(is_between(_timeout, MIN_TIMEOUT, MAX_TIMEOUT), "Invalid timeout value");
@@ -142,11 +162,7 @@ private:
         std::fill_n(buffer, MAX_DATAGRAM, '\0');
     }
 
-    static bool valid_tickets_count(tickets_t requested, tickets_t available) {
-        return is_between(requested, static_cast<uint16_t>(1), std::min(MAX_TICKETS, available));
-    }
-
-    size_t read_message(address_t client) {
+    size_t read_message(addr_ptr client) {
         auto address_len = static_cast<socklen_t>(sizeof(*client));
         ssize_t message_len = recvfrom(
                 socket_fd, buffer, MAX_DATAGRAM, 0,
@@ -157,7 +173,7 @@ private:
         return static_cast<size_t>(message_len);
     }
 
-    void send_message(address_t client, size_t length = MAX_DATAGRAM) {
+    void send_message(addr_ptr client, size_t length = MAX_DATAGRAM) {
         auto address_len = static_cast<socklen_t>(sizeof(*client));
         ssize_t sent_len = sendto(
                 socket_fd, buffer, length, 0,
@@ -167,7 +183,7 @@ private:
         ensure(sent_len == static_cast<ssize_t>(length), "Failed to send a message");
     }
 
-    void handle_request(address_t client, size_t request_len) {
+    void handle_request(addr_ptr client, size_t request_len) {
         try {
             switch (buffer[0]) {
                 case ClientRequest::GET_EVENTS:
@@ -187,7 +203,7 @@ private:
         }
     }
 
-    void try_send_events(address_t client, size_t request_len) {
+    void try_send_events(addr_ptr client, size_t request_len) {
         if (request_len > ClientRequest::GET_EVENTS_LEN) {
             throw std::invalid_argument("GET_EVENTS request is too long");
         }
@@ -195,27 +211,27 @@ private:
         this->send_events(client);
     }
 
-    void send_events(address_t client) {
+    void send_events(addr_ptr client) {
         size_t packed_bytes = buffer_write(buffer, ServerResponse::EVENTS);
 
         for (auto& [description, id] : events) {
             char event_data[ServerResponse::MAX_EVENT_DATA];
-            size_t event_bytes = buffer_write(
-                    event_data, htonl(id), htons(tickets[id]),
+            size_t event_bytes = buffer_write(event_data,
+                    htonl(id), htons(tickets[id]),
                     static_cast<desclen_t>(description.size()),
-                    const_cast<char*>(description.c_str())
+                    static_cast<std::string>(description)
             );
 
             if (event_bytes + packed_bytes > MAX_DATAGRAM)
                 break;
 
-            packed_bytes += buffer_write_n(buffer + packed_bytes, event_data, event_bytes);
+            packed_bytes += buffer_write(buffer + packed_bytes, std::string(event_data, event_bytes));
         }
 
         this->send_message(client, packed_bytes);
     }
 
-    void try_reserve_tickets(address_t client, size_t request_len) {
+    void try_reserve_tickets(addr_ptr client, size_t request_len) {
         if (request_len > ClientRequest::GET_RESERVATION_LEN) {
             throw std::invalid_argument("GET_EVENTS request is too long");
         }
@@ -231,16 +247,20 @@ private:
         this->reserve_tickets(client, event, tickets_count);
     }
 
-    void reserve_tickets(address_t client, event_id event, tickets_t tickets_count) {
-//        size_t bytes = buffer_write(buffer, REQ)
+    static bool valid_tickets_count(tickets_t requested, tickets_t available) {
+        return is_between(requested, static_cast<uint16_t>(1), std::min(MAX_TICKETS, available));
     }
 
-    void try_send_tickets(address_t client, size_t request_len) {
+    void reserve_tickets(addr_ptr client, event_id event, tickets_t tickets_count) {
+    }
+
+
+    void try_send_tickets(addr_ptr client, size_t request_len) {
 
     }
 
     template<typename T>
-    void send_bad_request(address_t client_address, T arg) {
+    void send_bad_request(addr_ptr client_address, T arg) {
         if constexpr (std::is_same_v<T, tickets_t>) {
             warn("Illegal amount of tickets", arg);
         } else {
