@@ -41,4 +41,8 @@ inline Arg* buffer_read(char* buffer, size_t offset) {
     return reinterpret_cast<Arg*>(buffer + offset);
 }
 
+inline std::string buffer_to_string(char* buffer, size_t offset, size_t len = 1) {
+    return {buffer + offset, len};
+}
+
 #endif //CINEMA_SERVER_BUFFER_H
