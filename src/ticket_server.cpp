@@ -13,8 +13,8 @@
 #include "buffer.h"
 
 namespace {
-    template<typename T, std::enable_if_t<std::is_arithmetic_v<T>, bool> = true>
-    constexpr bool is_between(T value, T min, T max) noexcept {
+    template<typename Number, std::enable_if_t<std::is_arithmetic_v<Number>, bool> = true>
+    constexpr bool is_between(Number value, Number min, Number max) noexcept {
         return value >= min && value <= max;
     }
 }
@@ -119,20 +119,21 @@ private:
     /** Length of a cookie to confirm a reservation */
     static constexpr size_t COOKIE_LEN = 48;
 
-    /** Minimal character of a cookie */
+    /** Character range for cookie */
     static constexpr char MIN_COOKIE_CHAR = 33;
-
-    /** Maximal character of a cookie */
     static constexpr char MAX_COOKIE_CHAR = 126;
 
     /** Maximal number of tickets to reserve in a single request */
     static constexpr tickets_t MAX_TICKETS = 9357;
 
-    /** Range of characters for ticket code */
-    static constexpr std::string_view TICKET_CODE_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-
     /** Length of a ticket code */
     static constexpr size_t TICKET_LEN = 7;
+
+    /** Character ranges for ticket codes */
+    static constexpr char MIN_TICKET_DIGIT = '0';
+    static constexpr char MAX_TICKET_DIGIT = '9';
+    static constexpr char MIN_TICKET_ALPHA = 'A';
+    static constexpr char MAX_TICKET_ALPHA = 'Z';
 
     int socket_fd = -1; /** Socket of communication */
     char buffer[MAX_DATAGRAM]; /** Communication buffer */
@@ -143,7 +144,9 @@ private:
     uint32_t timeout; /** Time for a reservation to be valid */
     std::map<reservation_id, reservation_data> reserved; /** Reserved tickets for events */
     std::unordered_map<std::string, reservation_id> cookies; /** Cookies to confirm reservations */
-    std::set<std::string> purchased;   /** Codes of purchased tickets */
+
+    std::string next_ticket = "0000000"; /** Ticket code for the next purchase */
+    std::unordered_map<reservation_id, std::vector<std::string>> purchased; /** Purchase history */
 
     void set_timeout(uint32_t _timeout) {
         ensure(is_between(_timeout, MIN_TIMEOUT, MAX_TIMEOUT), "Invalid timeout value");
@@ -191,7 +194,7 @@ private:
         return static_cast<size_t>(message_len);
     }
 
-    void send_message(addr_ptr client, size_t length = MAX_DATAGRAM) {
+    void send_message(addr_ptr client, size_t length) {
         auto address_len = static_cast<socklen_t>(sizeof(*client));
         ssize_t sent_len = sendto(
                 socket_fd, buffer, length, 0,
@@ -222,7 +225,7 @@ private:
     }
 
     void try_send_events(addr_ptr client, size_t request_len) {
-        if (request_len > ClientRequest::GET_EVENTS_LEN) {
+        if (request_len != ClientRequest::GET_EVENTS_LEN) {
             throw std::invalid_argument("GET_EVENTS request is too long");
         }
 
@@ -234,11 +237,9 @@ private:
 
         for (auto& [description, id] : events) {
             char event_data[ServerResponse::MAX_EVENT_DATA];
-            size_t event_bytes = buffer_write(event_data,
-                    htonl(id), htons(tickets[id]),
-                    static_cast<desclen_t>(description.size()),
-                    static_cast<std::string>(description)
-            );
+            size_t event_bytes = buffer_write(event_data, htonl(id), htons(tickets[id]),
+                                              static_cast<desclen_t>(description.size()),
+                                              static_cast<std::string>(description));
 
             if (event_bytes + packed_bytes > MAX_DATAGRAM)
                 break;
@@ -250,7 +251,7 @@ private:
     }
 
     void try_reserve_tickets(addr_ptr client, size_t request_len) {
-        if (request_len > ClientRequest::GET_RESERVATION_LEN) {
+        if (request_len != ClientRequest::GET_RESERVATION_LEN) {
             throw std::invalid_argument("GET_EVENTS request is too long");
         }
 
@@ -260,9 +261,9 @@ private:
 
         if (ticket_it == tickets.end() || !valid_tickets_count(tickets_count, ticket_it->second)) {
             this->send_bad_request(client, event);
+        } else {
+            this->reserve_tickets(client, event, tickets_count);
         }
-
-        this->reserve_tickets(client, event, tickets_count);
     }
 
     static bool valid_tickets_count(tickets_t requested, tickets_t available) {
@@ -277,10 +278,9 @@ private:
         reserved[reservation] = {event, tickets_count};
         cookies[cookie] = reservation;
 
-        size_t bytes = buffer_write(buffer,
-                ServerResponse::RESERVATION, htonl(reservation),
-                htonl(event), htons(tickets_count), cookie
-        );
+        size_t bytes = buffer_write(buffer, ServerResponse::RESERVATION,
+                                    htonl(reservation), htonl(event),
+                                    htons(tickets_count), cookie);
 
         bytes += buffer_write(buffer + bytes, htobe64(timeout + current_time()));
         this->send_message(client, bytes);
@@ -304,7 +304,7 @@ private:
     std::string generate_cookie() const {
         std::string cookie(COOKIE_LEN, 0);
         std::mt19937 rng{std::random_device{}()};
-        std::uniform_int_distribution<size_t> pick(MIN_COOKIE_CHAR, MAX_COOKIE_CHAR);
+        std::uniform_int_distribution<char> pick(MIN_COOKIE_CHAR, MAX_COOKIE_CHAR);
 
         do {
             std::generate_n(cookie.begin(), COOKIE_LEN, [&] {return pick(rng);});
@@ -314,7 +314,61 @@ private:
     }
 
     void try_send_tickets(addr_ptr client, size_t request_len) {
+        if (request_len != ClientRequest::GET_TICKETS_LEN) {
+            throw std::invalid_argument("GET_TICKETS request is too long");
+        }
 
+        auto reservation = htonl(*buffer_read<reservation_id>(buffer, 1));
+        auto cookie = buffer_to_string(buffer, 1 + sizeof(reservation), COOKIE_LEN);
+        auto reservation_it = reserved.find(reservation);
+
+        if (reservation_it == reserved.end() || cookies.find(cookie) == cookies.end()) {
+            this->send_bad_request(client, reservation);
+        } else {
+            this->send_tickets(client, reservation, reservation_it->second.second, cookie);
+        }
+    }
+
+    void send_tickets(addr_ptr client, reservation_id reservation,
+                      tickets_t ticket_count, const std::string& cookie) {
+        size_t bytes = buffer_write(buffer, ServerResponse::TICKETS,
+                                    htonl(reservation), htons(ticket_count));
+
+        if (purchased.find(reservation) == purchased.end()) {
+            this->register_tickets(reservation, ticket_count);
+        }
+
+        std::for_each_n(purchased[reservation].begin(), ticket_count,
+                        [&](const auto& ticket) {
+            bytes += buffer_write(buffer + bytes, ticket);
+        });
+
+        this->send_message(client, bytes);
+    }
+
+    void register_tickets(reservation_id reservation, tickets_t ticket_count) {
+        std::generate_n(std::back_inserter(purchased[reservation]), ticket_count,
+                        [this] {return this->generate_ticket();});
+    }
+
+    std::string generate_ticket() {
+        std::string ticket = next_ticket;
+        for (auto& letter : ticket) {
+            if (letter == MAX_TICKET_ALPHA) {
+                letter = MIN_TICKET_DIGIT;
+            } else {
+                if (letter == MAX_TICKET_DIGIT) {
+                    letter = MIN_TICKET_ALPHA;
+                } else {
+                    letter++;
+                }
+                break;
+            }
+        }
+
+        std::swap(ticket, next_ticket);
+
+        return ticket;
     }
 
     template<typename T>
@@ -322,7 +376,7 @@ private:
         if constexpr (std::is_same_v<T, tickets_t>) {
             warn("Illegal amount of tickets", arg);
         } else {
-            warn("Unknown event", arg);
+            warn("Wrong cookie for reservation", arg);
         }
 
         size_t bytes = buffer_write(buffer, ServerResponse::BAD_REQUEST, arg);
