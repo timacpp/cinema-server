@@ -1,4 +1,6 @@
 #include <set>
+#include <chrono>
+#include <random>
 #include <fstream>
 
 #include <unistd.h>
@@ -85,7 +87,7 @@ public:
         }
     }
 
-    static sockaddr_in create_address(uint16_t port) {
+    static sockaddr_in address(uint16_t port) {
         sockaddr_in address{};
 
         address.sin_family = AF_INET;
@@ -95,26 +97,42 @@ public:
         return address;
     }
 
+    static uint64_t current_time() {
+        using namespace std::chrono;
+        return duration_cast<seconds>(system_clock::now().time_since_epoch()).count();
+    }
+
 private:
     using desclen_t        = uint8_t;
     using tickets_t        = uint16_t;
     using event_id         = uint32_t;
     using reservation_id   = uint32_t;
-    using seconds_t        = uint64_t;
     using addr_ptr         = sockaddr_in*;
     using reservation_data = std::pair<event_id, tickets_t>;
 
     /** Server buffer size */
-    static constexpr size_t MAX_DATAGRAM  = 65507;
-
-    /** Length of a cookie to confirm a reservation */
-    static constexpr size_t COOKIE_LEN    = 384;
-
-    /** Upperbound of tickets to reserve in a single request */
-    static constexpr tickets_t MAX_TICKETS = 9357;
+    static constexpr size_t MAX_DATAGRAM = 65507;
 
     /** Minimal possible ID of a reservation */
     static constexpr reservation_id MIN_RESERVATION_ID = 1000000;
+
+    /** Length of a cookie to confirm a reservation */
+    static constexpr size_t COOKIE_LEN = 48;
+
+    /** Minimal character of a cookie */
+    static constexpr char MIN_COOKIE_CHAR = 33;
+
+    /** Maximal character of a cookie */
+    static constexpr char MAX_COOKIE_CHAR = 126;
+
+    /** Maximal number of tickets to reserve in a single request */
+    static constexpr tickets_t MAX_TICKETS = 9357;
+
+    /** Range of characters for ticket code */
+    static constexpr std::string_view TICKET_CODE_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+    /** Length of a ticket code */
+    static constexpr size_t TICKET_LEN = 7;
 
     int socket_fd = -1; /** Socket of communication */
     char buffer[MAX_DATAGRAM]; /** Communication buffer */
@@ -124,9 +142,8 @@ private:
 
     uint32_t timeout; /** Time for a reservation to be valid */
     std::map<reservation_id, reservation_data> reserved; /** Reserved tickets for events */
-    std::unordered_map<reservation_id, std::string> cookies; /** Cookies to validate reservation */
-
-    std::set<std::string> purchased; /** Codes of purchased tickets */
+    std::unordered_map<std::string, reservation_id> cookies; /** Cookies to confirm reservations */
+    std::set<std::string> purchased;   /** Codes of purchased tickets */
 
     void set_timeout(uint32_t _timeout) {
         ensure(is_between(_timeout, MIN_TIMEOUT, MAX_TIMEOUT), "Invalid timeout value");
@@ -135,13 +152,13 @@ private:
 
     void initialize_database(const std::string& file_db) {
         std::ifstream file(file_db);
-        std::string film, tickets_count;
+        std::string name, tickets_count;
         ensure(file.is_open(), "File", file_db, "does not exist");
 
-        for (event_id identity_key = 0; getline(file, film); identity_key++) {
+        for (event_id event = 0; getline(file, name); event++) {
             if (getline(file, tickets_count)) {
-                events[film] = identity_key;
-                std::stringstream(tickets_count) >> tickets[identity_key];
+                events[name] = event;
+                std::stringstream(tickets_count) >> tickets[event];
             }
         }
     }
@@ -149,7 +166,7 @@ private:
     void bind_socket(uint16_t port) {
         ensure(is_between(port, MIN_PORT, MAX_PORT), "Invalid port value");
         this->socket_fd = socket(AF_INET, SOCK_DGRAM, 0); /* IPv4 UDP socket */
-        ensure_errno(this->bind_address(create_address(port)), "Failed to bind address");
+        ensure_errno(this->bind_address(address(port)), "Failed to bind address");
     }
 
     int bind_address(const sockaddr_in& address) const {
@@ -158,6 +175,7 @@ private:
         return bind(this->socket_fd, (sockaddr*) &address, address_len);
     }
 
+    // TODO: maybe redundant
     void clear_buffer() {
         std::fill_n(buffer, MAX_DATAGRAM, '\0');
     }
@@ -252,8 +270,48 @@ private:
     }
 
     void reserve_tickets(addr_ptr client, event_id event, tickets_t tickets_count) {
+        std::string cookie = this->generate_cookie();
+        reservation_id reservation = this->generate_reservation_id();
+
+        tickets[event] -= tickets_count;
+        reserved[reservation] = {event, tickets_count};
+        cookies[cookie] = reservation;
+
+        size_t bytes = buffer_write(buffer,
+                ServerResponse::RESERVATION, htonl(reservation),
+                htonl(event), htons(tickets_count), cookie
+        );
+
+        bytes += buffer_write(buffer + bytes, htobe64(timeout + current_time()));
+        this->send_message(client, bytes);
     }
 
+    reservation_id generate_reservation_id() const {
+        if (reserved.empty())
+            return MIN_RESERVATION_ID;
+
+        auto largest_reserved = reserved.rbegin()->first;
+        if (largest_reserved <= std::numeric_limits<reservation_id>::max() - 1)
+            return largest_reserved + 1;
+
+        auto last_in = [](const auto& lhs, const auto& rhs) -> bool {
+            return lhs.first + 1 != rhs.first;
+        };
+
+        return 1 + std::adjacent_find(reserved.begin(), reserved.end(), last_in)->first;
+    }
+
+    std::string generate_cookie() const {
+        std::string cookie(COOKIE_LEN, 0);
+        std::mt19937 rng{std::random_device{}()};
+        std::uniform_int_distribution<size_t> pick(MIN_COOKIE_CHAR, MAX_COOKIE_CHAR);
+
+        do {
+            std::generate_n(cookie.begin(), COOKIE_LEN, [&] {return pick(rng);});
+        } while (cookies.find(cookie) != cookies.end());
+
+        return cookie;
+    }
 
     void try_send_tickets(addr_ptr client, size_t request_len) {
 
