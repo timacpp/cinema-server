@@ -10,12 +10,13 @@
 #include "ensure.h"
 
 namespace {
-    /* Numerical base of input flag values */
+    /** Numerical base of input flag values */
     constexpr int IN_BASE = 10;
 
-    /* Number of arguments per flag: name and value */
+    /** Number of arguments per flag: name and value */
     constexpr size_t FLAG_DATA_LEN = 2;
 
+    /** Converts @p value to type @tp T */
     template<typename T>
     inline T convert_flag(const std::string& value) {
         if constexpr (std::is_convertible_v<T, std::string>) {
@@ -38,6 +39,11 @@ namespace {
         quit("Unexpected flag type:", typeid(T).name());
     }
 
+    /**
+     * Creates a regex to match flag names.
+     * @param names concatenation of a single-character flag names
+     * @return regex
+     */
     inline std::regex build_flags_regex(const std::string& names) {
         std::string pattern;
 
@@ -53,16 +59,21 @@ namespace {
     }
 }
 
-/* Mapping of flag labels to their string values */
+/** Mapping of flag names to their string values */
 using flag_map = std::unordered_map<std::string, std::string>;
 
+/**
+ * Creates a mapping from flag names (including '-') to their string value.
+ * @param names concatenated flag names
+ * @return flag to value mapping
+ */
 inline flag_map create_flag_map(int argc, char** argv, const std::string& names) {
     ensure(argc <= 1 + FLAG_DATA_LEN * names.size(), "Too many flags given.");
 
     flag_map flags;
     std::regex name_regex(build_flags_regex(names));
 
-    /* Iterate over pairs: argv[i] - flag label, argv[i + 1] - flag value */
+    /* Iterate over pairs: argv[i] - flag name, argv[i + 1] - flag value */
     for (size_t i = 1; i < argc; i += FLAG_DATA_LEN) {
         std::string name(argv[i]);
 
@@ -75,6 +86,14 @@ inline flag_map create_flag_map(int argc, char** argv, const std::string& names)
     return flags;
 }
 
+/**
+ * Gets the flag and converts it to a given type.
+ * If the flag does not exist inside a map, returns std::nullopt.
+ * @tparam T type to convert a flag value
+ * @param flags flag map
+ * @param name name of the flag
+ * @return flag value wrapped with std::optional<>
+ */
 template<typename T>
 inline std::optional<T> get_flag(const flag_map& flags, const std::string& name) {
     auto flag_it = flags.find(name);
@@ -90,6 +109,14 @@ inline std::optional<T> get_flag(const flag_map& flags, const std::string& name)
     }
 }
 
+/**
+ * Gets the flag and converts it to a given type.
+ * If the flag does not exist inside a map, ends program.
+ * @tparam T type to convert a flag value
+ * @param flags flag map
+ * @param name name of the flag
+ * @return flag value
+ */
 template<typename T>
 inline T get_flag_required(const flag_map& flags, const std::string& name) {
     try {
