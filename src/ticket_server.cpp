@@ -252,6 +252,24 @@ private:
         this->send_events(client);
     }
 
+    void send_events(addr_ptr client) {
+        size_t packed_bytes = buffer_write(buffer, ServerResponse::EVENTS);
+
+        for (auto& [description, id] : events) {
+            char event_data[ServerResponse::MAX_EVENT_DATA];
+            size_t event_bytes = buffer_write(event_data, htonl(id), htons(tickets[id]),
+                                              static_cast<desclen_t>(description.size()),
+                                              static_cast<std::string>(description));
+
+            if (event_bytes + packed_bytes > MAX_DATAGRAM)
+                break;
+
+            packed_bytes += buffer_write(buffer + packed_bytes, std::string(event_data, event_bytes));
+        }
+
+        this->send_response(client, packed_bytes);
+    }
+
     void handle_get_reservation_request(addr_ptr client, size_t request_len) {
         if (request_len != ClientRequest::GET_RESERVATION_LEN) {
             throw std::invalid_argument("GET_EVENTS request is too long");
@@ -337,24 +355,6 @@ private:
             auto [event, tickets_count] = reservation_it->second.second;
             this->send_tickets(client, reservation, tickets_count, cookie);
         }
-    }
-
-    void send_events(addr_ptr client) {
-        size_t packed_bytes = buffer_write(buffer, ServerResponse::EVENTS);
-
-        for (auto& [description, id] : events) {
-            char event_data[ServerResponse::MAX_EVENT_DATA];
-            size_t event_bytes = buffer_write(event_data, htonl(id), htons(tickets[id]),
-                                              static_cast<desclen_t>(description.size()),
-                                              static_cast<std::string>(description));
-
-            if (event_bytes + packed_bytes > MAX_DATAGRAM)
-                break;
-
-            packed_bytes += buffer_write(buffer + packed_bytes, std::string(event_data, event_bytes));
-        }
-
-        this->send_response(client, packed_bytes);
     }
 
     void send_tickets(addr_ptr client, reservation_id reservation,
