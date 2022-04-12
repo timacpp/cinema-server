@@ -142,8 +142,8 @@ private:
     int socket_fd = -1; /** Socket for IPv4 UDP connection */
     char buffer[MAX_DATAGRAM]; /** Communication buffer */
 
-    std::unordered_map<std::string, event_id> events; /** Mapping of event names to their id's */
-    std::unordered_map<event_id, tickets_t> tickets; /** Number of available tickets for events */
+    /** Mapping of event id's to their names and number of available tickets */
+    std::unordered_map<event_id, std::pair<std::string, tickets_t>> events;
 
     seconds_t timeout; /** Time measured in seconds for a reservation to be valid */
     std::map<reservation_id, reservation_data> reserved; /** Reserved tickets for events */
@@ -165,8 +165,8 @@ private:
 
         for (event_id event = 0; getline(file, name); event++) {
             if (getline(file, tickets_count)) {
-                events[name] = event;
-                std::stringstream(tickets_count) >> tickets[event];
+                events[event].first = name;
+                std::stringstream(tickets_count) >> events[event].second;
             }
         }
     }
@@ -224,7 +224,7 @@ private:
         cookies.erase(cookie);
         expiration.erase(expiration_time);
         reserved.erase(reservation_it);
-        tickets[event] += ticket_count;
+        events[event].second += ticket_count;
     }
 
     // TODO: throw further ?
@@ -259,9 +259,10 @@ private:
     void send_events(addr_ptr client) {
         size_t packed_bytes = buffer_write(buffer, ServerResponse::EVENTS);
 
-        for (auto& [description, id] : events) {
+        for (auto& [id, event_info] : events) {
             char event_data[ServerResponse::MAX_EVENT_DATA];
-            size_t event_bytes = buffer_write(event_data, htonl(id), htons(tickets[id]),
+            auto [description, tickets] = event_info;
+            size_t event_bytes = buffer_write(event_data, htonl(id), htons(tickets),
                                               static_cast<desclen_t>(description.size()),
                                               static_cast<std::string>(description));
 
@@ -280,13 +281,11 @@ private:
         }
 
         auto event = htonl(*buffer_read<event_id>(buffer, 1));
-        auto tickets_count = htons(*buffer_read<tickets_t>(buffer, 1 + sizeof(event)));
-        auto ticket_it = tickets.find(event);
+        auto tickets = htons(*buffer_read<tickets_t>(buffer, 1 + sizeof(event)));
+        auto event_it = events.find(event);
 
-        warn("Available:", ticket_it->second, "Required:", tickets_count);
-
-        if (ticket_it != tickets.end() && valid_ticket_count(tickets_count, ticket_it->second)) {
-            this->reserve_tickets(client, event, tickets_count);
+        if (event_it != events.end() && valid_ticket_count(tickets, event_it->second.second)) {
+            this->reserve_tickets(client, event, tickets);
         } else {
             this->send_bad_request<event_id>(client, event);
         }
@@ -310,7 +309,7 @@ private:
         reservation_id reservation = this->generate_reservation_id();
         cookie_t cookie = this->generate_cookie();
 
-        tickets[event] -= ticket_count;
+        events[event].second -= ticket_count;
         reserved[reservation] = {{cookie, expiration_time}, {event, ticket_count}};
         expiration[expiration_time] = reservation;
         cookies.insert(cookie);
