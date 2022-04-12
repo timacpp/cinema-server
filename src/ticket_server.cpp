@@ -71,8 +71,6 @@ public:
 
     [[noreturn]] void start() {
         while (true) {
-            this->remove_expired_reservations();
-
             sockaddr_in client{};
             size_t read_length = this->get_request(&client);
 
@@ -82,6 +80,7 @@ public:
             }
 
             try {
+                this->remove_expired_reservations();
                 this->handle_request(&client, read_length);
             } catch (const std::invalid_argument& e) {
                 warn(e.what(), std::string(buffer, read_length));
@@ -110,11 +109,13 @@ private:
     using event_id       = uint32_t;
     using reservation_id = uint32_t;
     using seconds_t      = uint64_t;
+    using cookie_t       = std::string;
 
     using addr_ptr            = sockaddr_in*;
     using event_data          = std::pair<event_id, tickets_t>;
-    using reservation_data    = std::pair<std::string, event_data>;
-    using reservation_confirm = std::tuple<reservation_id, std::string, seconds_t>;
+    using crypto_data         = std::pair<cookie_t, seconds_t>;
+    using reservation_data    = std::pair<crypto_data, event_data>;
+    using reservation_confirm = std::tuple<reservation_id, cookie_t, seconds_t>;
 
     /** Server buffer size */
     static constexpr size_t MAX_DATAGRAM = 65507;
@@ -147,7 +148,7 @@ private:
     seconds_t timeout; /** Time measured in seconds for a reservation to be valid */
     std::map<reservation_id, reservation_data> reserved; /** Reserved tickets for events */
     std::map<seconds_t, reservation_id> expiration; /** Expiration time for reserved tickets */
-    std::unordered_set<std::string> cookies; /** Cookies to confirm reservations */
+    std::unordered_set<cookie_t> cookies; /** Cookies to confirm reservations */
 
     std::string next_ticket = "0000000"; /** Ticket code for the next purchase */
     std::unordered_map<reservation_id, std::vector<std::string>> purchased; /** Purchase history */
@@ -197,25 +198,28 @@ private:
         ensure(sent_len == static_cast<ssize_t>(length), "Failed to send a message");
     }
 
+    // TODO: copy_if?
     void remove_expired_reservations() {
-        std::vector<std::pair<reservation_id, seconds_t>> expired;
-        const auto unexpired_it = expiration.upper_bound(TicketServer::current_time());
+        std::vector<reservation_id> expired;
 
-        for (auto it = expiration.begin(); it != unexpired_it; it++) {
-            if (TicketServer::current_time() >= it->first) {
-                expired.emplace_back(std::make_pair(it->second, it->first));
+        for (auto& [expiration_time, reservation] : expiration) {
+            if (expiration_time < TicketServer::current_time()) {
+                expired.emplace_back(reservation);
+            } else {
+                break;
             }
         }
 
-        for (auto& [reservation, expiration_time] : expired) {
-            this->remove_reservation(reservation, expiration_time);
+        for (auto& reservation : expired) {
+            this->remove_reservation(reservation);
         }
     }
 
-    void remove_reservation(reservation_id reservation, seconds_t expiration_time) {
+    void remove_reservation(reservation_id reservation) {
         auto reservation_it = reserved.find(reservation);
-        auto [cookie, event_data] = reservation_it->second;
-        auto [event, ticket_count] = event_data;
+        auto [crypto_info, event_info] = reservation_it->second;
+        auto [cookie, expiration_time] = crypto_info;
+        auto [event, ticket_count] = event_info;
 
         cookies.erase(cookie);
         expiration.erase(expiration_time);
@@ -279,10 +283,12 @@ private:
         auto tickets_count = htons(*buffer_read<tickets_t>(buffer, 1 + sizeof(event)));
         auto ticket_it = tickets.find(event);
 
-        if (ticket_it == tickets.end() || !valid_ticket_count(tickets_count, ticket_it->second)) {
-            this->send_bad_request(client, event);
-        } else {
+        warn("Available:", ticket_it->second, "Required:", tickets_count);
+
+        if (ticket_it != tickets.end() && valid_ticket_count(tickets_count, ticket_it->second)) {
             this->reserve_tickets(client, event, tickets_count);
+        } else {
+            this->send_bad_request<event_id>(client, event);
         }
     }
 
@@ -292,9 +298,8 @@ private:
 
     void reserve_tickets(addr_ptr client, event_id event, tickets_t ticket_count) {
         auto [reservation, cookie, expiration_time] = this->create_reservation(event, ticket_count);
-        size_t bytes = buffer_write(buffer, ServerResponse::RESERVATION,
-                                    htonl(reservation), htonl(event),
-                                    htons(ticket_count), cookie);
+        size_t bytes = buffer_write(buffer, ServerResponse::RESERVATION,htonl(reservation),
+                                    htonl(event), htons(ticket_count), cookie);
 
         bytes += buffer_write(buffer + bytes, htobe64(expiration_time));
         this->send_response(client, bytes);
@@ -303,16 +308,17 @@ private:
     reservation_confirm create_reservation(event_id event, tickets_t ticket_count) {
         seconds_t expiration_time = timeout + TicketServer::current_time();
         reservation_id reservation = this->generate_reservation_id();
-        std::string cookie = this->generate_cookie();
+        cookie_t cookie = this->generate_cookie();
 
         tickets[event] -= ticket_count;
-        reserved[reservation] = {cookie, {event, ticket_count}};
+        reserved[reservation] = {{cookie, expiration_time}, {event, ticket_count}};
         expiration[expiration_time] = reservation;
         cookies.insert(cookie);
 
         return {reservation, cookie, expiration_time};
     }
 
+    // TODO: adjacent find with 1 element?
     reservation_id generate_reservation_id() const {
         if (reserved.empty())
             return MIN_RESERVATION_ID;
@@ -328,8 +334,8 @@ private:
         return 1 + std::adjacent_find(reserved.begin(), reserved.end(), last_in)->first;
     }
 
-    std::string generate_cookie() const {
-        std::string cookie(COOKIE_LEN, 0);
+    cookie_t generate_cookie() const {
+        cookie_t cookie(COOKIE_LEN, 0);
         std::mt19937 rng{std::random_device{}()};
         std::uniform_int_distribution<char> pick(MIN_COOKIE_CHAR, MAX_COOKIE_CHAR);
 
@@ -349,16 +355,16 @@ private:
         auto cookie = buffer_to_string(buffer, 1 + sizeof(reservation), COOKIE_LEN);
         auto reservation_it = reserved.find(reservation);
 
-        if (reservation_it == reserved.end() || cookies.find(cookie) == cookies.end()) {
-            this->send_bad_request(client, reservation);
-        } else {
+        if (reservation_it != reserved.end() && cookies.find(cookie) != cookies.end()) {
             auto [event, tickets_count] = reservation_it->second.second;
             this->send_tickets(client, reservation, tickets_count, cookie);
+        } else {
+            this->send_bad_request<reservation_id>(client, reservation);
         }
     }
 
     void send_tickets(addr_ptr client, reservation_id reservation,
-                      tickets_t ticket_count, const std::string& cookie) {
+                      tickets_t ticket_count, const cookie_t& cookie) {
         size_t bytes = buffer_write(buffer, ServerResponse::TICKETS,
                                     htonl(reservation), htons(ticket_count));
 
@@ -375,7 +381,7 @@ private:
     }
 
     void disable_expiration(reservation_id reservation) {
-        expiration.erase(reservation);
+        expiration.erase(reserved[reservation].first.second);
     }
 
     void assign_tickets(reservation_id reservation, tickets_t ticket_count) {
@@ -405,16 +411,16 @@ private:
         return ticket;
     }
 
-    template<typename T>
-    void send_bad_request(addr_ptr client_address, T arg) {
-        if constexpr (std::is_same_v<T, tickets_t>) {
-            warn("Illegal amount of tickets", arg);
+    template<typename T, std::enable_if_t<std::is_same_v<T, uint32_t>, bool> = true>
+    void send_bad_request(addr_ptr client, T data) {
+        if (data < MIN_RESERVATION_ID) {
+            warn("Illegal amount of tickets for event", data);
         } else {
-            warn("Wrong cookie for reservation", arg);
+            warn("Invalid cookie for reservation", data);
         }
 
-        size_t bytes = buffer_write(buffer, ServerResponse::BAD_REQUEST, arg);
-        this->send_response(client_address, bytes);
+        size_t bytes = buffer_write(buffer, ServerResponse::BAD_REQUEST, htonl(data));
+        this->send_response(client, bytes);
     }
 };
 
