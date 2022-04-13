@@ -111,10 +111,10 @@ private:
     using seconds_t      = uint64_t;
     using cookie_t       = std::string;
 
-    using addr_ptr            = sockaddr_in*;
-    using event_data          = std::pair<event_id, tickets_t>;
-    using crypto_data         = std::pair<cookie_t, seconds_t>;
-    using reservation_data    = std::pair<crypto_data, event_data>;
+    using addr_ptr         = sockaddr_in*;
+    using event_data       = std::pair<event_id, tickets_t>;
+    using crypto_data      = std::pair<cookie_t, seconds_t>;
+    using reservation_data = std::pair<crypto_data, event_data>;
 
     /** Server buffer size */
     static constexpr size_t MAX_DATAGRAM = 65507;
@@ -260,11 +260,12 @@ private:
         size_t packed_bytes = buffer_write(buffer, ServerResponse::EVENTS);
 
         /* Naively pack as many events as we can */
-        for (auto& [id, info] : events) {
+        for (auto& [event_id, event_info] : events) {
             char portion[ServerResponse::MAX_EVENT_DATA];
-            auto [description, tickets] = info;
-            size_t portion_bytes = buffer_write(portion, htonl(id), htons(tickets),
-                static_cast<desclen_t>(description.size()), static_cast<std::string>(description));
+            auto [description, tickets] = event_info;
+            size_t portion_bytes = buffer_write(portion, htonl(event_id), htons(tickets),
+                                                static_cast<desclen_t>(description.size()),
+                                                static_cast<std::string>(description));
 
             if (portion_bytes + packed_bytes > MAX_DATAGRAM)
                 break;
@@ -284,6 +285,7 @@ private:
         auto tickets = htons(*buffer_read<tickets_t>(buffer, 1 + sizeof(event)));
         auto event_it = events.find(event);
 
+        /* Check if event exists and server can provide the given number of tickets */
         if (event_it != events.end() && valid_ticket_count(tickets, event_it->second.second)) {
             this->reserve_tickets(client, event, tickets);
         } else {
@@ -355,7 +357,8 @@ private:
         auto cookie = buffer_to_string(buffer, 1 + sizeof(reservation), COOKIE_LEN);
         auto reservation_it = reserved.find(reservation);
 
-        if (reservation_it != reserved.end() && cookies.find(cookie) != cookies.end()) {
+        /* Check if reservation exists and cookie match */
+        if (reservation_it != reserved.end() && cookie == reservation_it->second.first.first) {
             auto [event, tickets_count] = reservation_it->second.second;
             this->send_tickets(client, reservation, tickets_count, cookie);
         } else {
@@ -368,7 +371,7 @@ private:
         size_t bytes = buffer_write(buffer, ServerResponse::TICKETS,
                                     htonl(reservation), htons(ticket_count));
 
-        /* If client didn't send a successful GET_TICKETS request */
+        /* If client haven't sent a successful GET_TICKETS request */
         if (purchased.find(reservation) == purchased.end()) {
             this->assign_tickets(reservation, ticket_count);
             this->disable_expiration(reservation);
