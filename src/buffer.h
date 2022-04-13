@@ -16,8 +16,8 @@ namespace {
 }
 
 /**
- * Writes a generic data to a buffer of a given size.
- * @tparam Arg type of a variable
+ * Writes a generic data of a given size to a buffer
+ * @tparam Arg type of a data
  * @param dest buffer
  * @param src data to write
  * @param size octets per source
@@ -52,7 +52,6 @@ inline size_t buffer_write(char* dest, Arg&& src_head, Args&&... src_tail) {
     size_t written = buffer_write(dest, std::forward<Arg>(src_head));
     return written + buffer_write(dest + written, std::forward<Args>(src_tail)...);
 }
-
 
 /**
  * Reads a pointer from buffer
