@@ -22,6 +22,16 @@ def is_debug():
             return True
     return False
 
+def port_used(port):
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex(('students.mimuw.edu.pl', port)) == 0
+
+def min_unused_port():
+    for port in range(1, 86400 + 1):
+        if not port_in_use(port):
+            return port
+
 # server_kill_timeout is in ms
 def start_server_with_params(params, server_kill_timeout=5000):
     debug = is_debug()
@@ -31,6 +41,10 @@ def start_server_with_params(params, server_kill_timeout=5000):
         print("[TESTS] starting server:", args)
 
     port = DEFAULT_PORT
+
+    if port_used(port):
+        port = min_unused_port()
+
     for i in range(len(params) - 1):
         if params[i] == '-p' and params[i + 1].isnumeric():
             port = int(params[i + 1])
