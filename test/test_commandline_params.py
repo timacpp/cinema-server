@@ -25,6 +25,9 @@ def test_commandline_params():
     assert_returns_1(['-f', 'event_files/events_example', '-p', 'a'])
     assert_returns_1(['-f', 'event_files/events_example', '-p', '65536'])
     assert_returns_0(['-f', 'event_files/events_example', '-p', '2022', '-p', '2022'])
+    assert_returns_0(['-f', 'event_files/events_example', '-p', '2022', '-p', '2021'])
+    assert_returns_1(['-f', 'event_files/events_example', '-p', '2022', '-p', '1'])
+    assert_returns_0(['-f', 'event_files/events_example', '-p', '1', '-p', '2022'])
     assert_returns_0(['-f', 'event_files/events_example', '-p', '65535'])
     assert_returns_0(['-f', 'event_files/events_example', '-p', '1024'])
     assert_returns_1(['-f', 'event_files/events_example', '-p', '1'])
@@ -44,6 +47,22 @@ def test_commandline_params():
     assert_returns_0(['-f', 'event_files/events_example', '-p', '2022', '-t', '5'])
     assert_returns_1(['-f', 'event_files/events_example', '-x', '5'])
     assert_returns_1(['f', 'event_files/events_example'])
+
+    assert_returns_1(['-f', 'event_files/events_example' '-p', 'f'])
+    assert_returns_1(['-f', 'event_files/events_example' '-p', '0f'])
+    assert_returns_1(['-f', 'event_files/events_example' '-p', '0xf'])
+    assert_returns_1(['-f', 'event_files/events_example' '-p', '0xF'])
+
+    assert_returns_1(['-f', 'event_files/events_example' '-t', '+-1'])
+    assert_returns_1(['-f', 'event_files/events_example' '-t', '-+1'])
+    assert_returns_1(['-f', 'event_files/events_example' '-t', '+1'])
+
+    assert_returns_1(['-f', ' event_files/events_example'])
+    assert_returns_1(['-f', 'event_files /events_example'])
+    assert_returns_1(['-f', 'event_files/ events_example'])
+    assert_returns_1(['-f', ' event_files/events_example '])
+    assert_returns_1(['-f', '\n'])
+    assert_returns_1(['-f', 'привет мир'])
 
 if __name__ == '__main__':
     test_commandline_params()
