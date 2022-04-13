@@ -1,5 +1,7 @@
 import subprocess, time, psutil, sys
 
+SERVER = 'localhost'
+# SERVER = 'students.mimuw.edu.pl'
 EXECUTABLE = '../ticket_server'
 DEFAULT_PORT = 2022
 
@@ -22,14 +24,14 @@ def is_debug():
             return True
     return False
 
-def port_used(port):
+def is_port_in_use_on_server(port):
     import socket
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        return s.connect_ex(('students.mimuw.edu.pl', port)) == 0
+        return s.connect_ex((SERVER, port)) == 0
 
-def min_unused_port():
+def min_unused_server_port():
     for port in range(1, 86400 + 1):
-        if not port_in_use(port):
+        if not is_port_in_use_on_server(port):
             return port
 
 # server_kill_timeout is in ms
@@ -42,15 +44,18 @@ def start_server_with_params(params, server_kill_timeout=5000):
 
     port = DEFAULT_PORT
 
-    if port_used(port):
-        port = min_unused_port()
-
     for i in range(len(params) - 1):
         if params[i] == '-p' and params[i + 1].isnumeric():
             port = int(params[i + 1])
 
     if is_port_in_use(port):
-        raise Exception("port " + str(port) + " is already in use")
+        if SERVER == 'localhost':
+            raise Exception("port " + str(port) + " is already in use")
+        else:
+            old_port = port
+            port = min_unused_server_port()
+            if debug:
+                print(f'Redirected form port {old_port} to {port}')
 
     if debug:
         server = subprocess.Popen(args)
