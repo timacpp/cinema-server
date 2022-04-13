@@ -31,6 +31,10 @@ def test_invalid_requests():
     try_ignore(client.send_message(struct.pack('!BIHB', 3, 0, 1, 0)), client, info)
     try_ignore_tickets(client.send_message(struct.pack('!BI48sB', 5, MIN_RESERVATION, COOKIE, 0)), client)
 
+    # Lacking byte
+    try_ignore(client.send_message(struct.pack('!BI', 3, 0)), client, info)
+    try_ignore_tickets(client.send_message(struct.pack('!BI', 5, MIN_RESERVATION)), client)
+
     server.terminate()
     server.communicate()
 
