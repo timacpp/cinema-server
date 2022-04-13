@@ -52,8 +52,6 @@ def test_commandline_params():
     assert_returns_1(['-f', 'event_files/events_example' '-p', '0f'])
     assert_returns_1(['-f', 'event_files/events_example' '-p', '0xf'])
     assert_returns_1(['-f', 'event_files/events_example' '-p', '0xF'])
-    assert_returns_1(['-f', 'event_files/events_example' '-p', '0xF'])
-    assert_returns_1(['-f', 'event_files/events_example' '-p', '0xF'])
     assert_returns_1(['-f', 'event_files/events_example' '-p', '123a'])
     assert_returns_1(['-f', 'event_files/events_example' '-p', 'a123'])
     assert_returns_1(['-f', 'event_files/events_example' '-p', '65535'])
