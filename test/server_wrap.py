@@ -4,6 +4,8 @@ SERVER = 'localhost'
 # SERVER = 'students.mimuw.edu.pl'
 EXECUTABLE = '../ticket_server'
 DEFAULT_PORT = 2022
+MAX_PORT = 86400
+MIN_PORT_NO_SUDO = 1024
 
 def is_port_in_use(port):
     for connection in psutil.net_connections():
@@ -30,7 +32,7 @@ def is_port_in_use_on_server(port):
         return s.connect_ex((SERVER, port)) == 0
 
 def min_unused_server_port():
-    for port in range(1, 86400 + 1):
+    for port in range(MIN_PORT_NO_SUDO, MAX_PORT + 1):
         if not is_port_in_use_on_server(port):
             return port
 
@@ -54,6 +56,8 @@ def start_server_with_params(params, server_kill_timeout=5000):
         else:
             old_port = port
             port = min_unused_server_port()
+            params.append('-p')
+            params.append(str(port))
             if debug:
                 print(f'Redirected form port {old_port} to {port}')
 
