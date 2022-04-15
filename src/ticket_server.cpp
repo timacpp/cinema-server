@@ -144,7 +144,8 @@ private:
     /** Mapping of reservation id's to <(cookie, expiration time), (event id, tickets)> */
     std::map<reservation_id, reservation_data> reserved;
 
-    std::map<seconds_t, reservation_id> expiration; /** Expiration time for reserved tickets */
+    /** Reservations expiring at the given time */
+    std::map<seconds_t, std::unordered_set<reservation_id>> expiration;
     std::unordered_set<cookie_t> cookies; /** Cookies confirming reservations */
 
     std::string next_ticket = "0000000"; /** Ticket code for the next purchase */
@@ -198,17 +199,19 @@ private:
     }
 
     void remove_expired_reservations() {
-        std::vector<reservation_id> expired;
+        std::vector<decltype(expiration)::iterator> expired;
         const seconds_t time = TicketServer::current_time();
-        const auto first_unexpired_it = expiration.upper_bound(time);
 
         /* Iterate over expired reservations */
-        for (auto it = expiration.cbegin(); it != first_unexpired_it; it++) {
-            expired.emplace_back(it->second);
+        for (auto it = expiration.begin(); it->first < time && it != expiration.end(); it++) {
+            expired.emplace_back(it);
+            for (auto reservation : it->second) {
+                this->remove_reservation(reservation);
+            }
         }
 
-        for (auto& reservation : expired) {
-            this->remove_reservation(reservation);
+        for (auto& it : expired) {
+            expiration.erase(it);
         }
     }
 
@@ -219,7 +222,6 @@ private:
         auto [event, tickets] = event_info;
 
         cookies.erase(cookie);
-        expiration.erase(expiration_time);
         reserved.erase(reservation_it);
         events[event].second += tickets;
     }
@@ -309,7 +311,7 @@ private:
 
         events[event].second -= tickets;
         reserved[reservation] = {{cookie, expiration_time}, {event, tickets}};
-        expiration[expiration_time] = reservation;
+        expiration[expiration_time].insert(reservation);
         cookies.insert(cookie);
 
         return {reservation, cookie, expiration_time};
@@ -356,14 +358,13 @@ private:
         /* Check if reservation exists and cookie match */
         if (reservation_it != reserved.end() && cookie == reservation_it->second.first.first) {
             auto [event, tickets_count] = reservation_it->second.second;
-            this->send_tickets(client, reservation, tickets_count, cookie);
+            this->send_tickets(client, reservation, tickets_count);
         } else {
             this->send_bad_request<reservation_id>(client, reservation);
         }
     }
 
-    void send_tickets(addr_ptr client, reservation_id reservation,
-                      tickets_t ticket_count, const cookie_t& cookie) {
+    void send_tickets(addr_ptr client, reservation_id reservation, tickets_t ticket_count) {
         size_t bytes = buffer_write(buffer, TICKETS, htonl(reservation), htons(ticket_count));
 
         /* If client haven't sent a successful GET_TICKETS request */
@@ -380,7 +381,8 @@ private:
     }
 
     void disable_expiration(reservation_id reservation) {
-        expiration.erase(reserved[reservation].first.second);
+        seconds_t expiration_time = reserved[reservation].first.second;
+        expiration[expiration_time].erase(reservation);
     }
 
     void assign_tickets(reservation_id reservation, tickets_t ticket_count) {
