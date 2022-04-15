@@ -67,7 +67,7 @@ using flag_map = std::unordered_map<std::string, std::string>;
  * @param names concatenated flag names
  * @return flag to value mapping
  */
-inline flag_map create_flag_map(int argc, char** argv, const std::string& names) {
+inline flag_map create_flag_map(size_t argc, char** argv, const std::string& names) {
     ensure(argc <= 1 + FLAG_DATA_LEN * names.size(), "Too many flags given.");
 
     flag_map flags;
