@@ -8,6 +8,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include "flags.h"
 #include "ensure.h"
@@ -47,6 +48,7 @@ public:
         this->bind_socket(port);
         this->set_timeout(timeout);
         this->initialize_database(file);
+        debug("Starting listening on port", port);
     }
 
     ~TicketServer() {
@@ -59,7 +61,7 @@ public:
             size_t read_length = this->get_request(&client);
 
             if (read_length == 0) {
-                warn("Received an empty request");
+                debug("Received an empty request");
                 continue;
             }
 
@@ -67,7 +69,7 @@ public:
                 this->remove_expired_reservations();
                 this->handle_request(&client, read_length);
             } catch (const std::invalid_argument& e) {
-                warn(e.what(), std::string(buffer, read_length));
+                debug(e.what(), std::string(buffer, read_length));
             }
         }
     }
@@ -85,6 +87,19 @@ public:
     static uint64_t current_time() {
         using namespace std::chrono;
         return duration_cast<seconds>(system_clock::now().time_since_epoch()).count();
+    }
+
+    static std::string response_name(ServerResponse response) {
+        switch(response) {
+            case EVENTS:
+                return "EVENTS";
+            case RESERVATION:
+                return "RESERVATION";
+            case TICKETS:
+                return "TICKETS";
+            default:
+                return "BAD_REQUEST";
+        }
     }
 
 private:
@@ -170,23 +185,27 @@ private:
     }
 
     void bind_socket(uint16_t port) {
-        ensure(is_between(port, MIN_PORT, MAX_PORT), "Invalid port value");
+        ensure(is_between(port, MIN_PORT, MAX_PORT), "Port must be from", MIN_PORT, "to", MAX_PORT);
         this->socket_fd = socket(AF_INET, SOCK_DGRAM, 0); /* IPv4 UDP socket */
-        ensure(this->bind_address(get_address(port)) != -1, "Failed to bind address");
+        ensure(this->setup_address(get_address(port)) != -1, "Port", port, "requires root privileges");
     }
 
-    int bind_address(const sockaddr_in& address) const {
+    int setup_address(const sockaddr_in& address) const {
         ensure(this->socket_fd > 0, "Failed to create a socket");
         auto address_len = static_cast<socklen_t>(sizeof(address));
         return bind(this->socket_fd, (sockaddr*) &address, address_len);
     }
+
 
     size_t get_request(addr_ptr client) {
         auto address_len = static_cast<socklen_t>(sizeof(*client));
         ssize_t message_len = recvfrom(socket_fd, buffer, MAX_DATAGRAM, 0,
                                        (sockaddr *) client, &address_len);
 
-        ensure(message_len >= 0, "Failed to receive a message");
+        std::string client_address = TicketServer::get_client_address(client);
+        ensure(message_len >= 0, "Failed to receive a message from", client_address);
+        debug("Received a message from", client_address);
+
         return static_cast<size_t>(message_len);
     }
 
@@ -195,12 +214,22 @@ private:
         ssize_t sent_len = sendto(socket_fd, buffer, length, 0,
                                   (sockaddr*) client, address_len);
 
-        ensure(sent_len == static_cast<ssize_t>(length), "Failed to send a message");
+        std::string client_address = TicketServer::get_client_address(client);
+        bool all_bytes_sent = sent_len == static_cast<ssize_t>(length);
+
+        ensure(all_bytes_sent, "Failed to send a message to", client_address);
+        debug("Sent", response_name(static_cast<ServerResponse>(buffer[0])), "to", client_address);
+    }
+
+    static std::string get_client_address(addr_ptr client) {
+        char* client_ip = inet_ntoa(client->sin_addr);
+        uint16_t client_port = ntohs(client->sin_port);
+        return std::string(client_ip) + ":" + std::to_string(client_port);
     }
 
     void remove_expired_reservations() {
-        std::vector<decltype(expiration)::iterator> expired;
         const seconds_t time = TicketServer::current_time();
+        std::vector<decltype(expiration)::iterator> expired;
 
         /* Iterate over expired reservations */
         for (auto it = expiration.begin(); it->first < time && it != expiration.end(); it++) {
@@ -210,8 +239,8 @@ private:
             }
         }
 
-        for (auto& it : expired) {
-            expiration.erase(it);
+        for (auto& expired_it : expired) {
+            expiration.erase(expired_it);
         }
     }
 
@@ -224,6 +253,8 @@ private:
         cookies.erase(cookie);
         reserved.erase(reservation_it);
         events[event].second += tickets;
+
+        debug("Reservation", reservation, "has expired");
     }
 
     void handle_request(addr_ptr client, size_t request_len) {
@@ -314,6 +345,8 @@ private:
         expiration[expiration_time].insert(reservation);
         cookies.insert(cookie);
 
+        debug("Created reservation", reservation, "for", tickets, "tickets to event", event);
+
         return {reservation, cookie, expiration_time};
     }
 
@@ -364,25 +397,27 @@ private:
         }
     }
 
-    void send_tickets(addr_ptr client, reservation_id reservation, tickets_t ticket_count) {
-        size_t bytes = buffer_write(buffer, TICKETS, htonl(reservation), htons(ticket_count));
+    void send_tickets(addr_ptr client, reservation_id reservation, tickets_t tickets) {
+        size_t bytes = buffer_write(buffer, TICKETS, htonl(reservation), htons(tickets));
 
         /* If client haven't sent a successful GET_TICKETS request */
         if (purchased.find(reservation) == purchased.end()) {
-            this->assign_tickets(reservation, ticket_count);
+            this->assign_tickets(reservation, tickets);
             this->disable_expiration(reservation);
         }
 
-        std::for_each_n(purchased[reservation].begin(), ticket_count, [&](auto& ticket) {
+        std::for_each_n(purchased[reservation].begin(), tickets, [&](auto& ticket) {
             bytes += buffer_write(buffer + bytes, ticket);
         });
 
+        debug("Sending", tickets, "tickets for reservation", reservation);
         this->send_response(client, bytes);
     }
 
     void disable_expiration(reservation_id reservation) {
         seconds_t expiration_time = reserved[reservation].first.second;
         expiration[expiration_time].erase(reservation);
+        debug("Disabled expiration for reservation", reservation);
     }
 
     void assign_tickets(reservation_id reservation, tickets_t ticket_count) {
@@ -416,9 +451,9 @@ private:
     template<typename T, std::enable_if_t<std::is_same_v<T, uint32_t>, bool> = true>
     void send_bad_request(addr_ptr client, T data) {
         if (data < MIN_RESERVATION_ID) { /* If T is event_id */
-            warn("Illegal amount of tickets for event", data);
+            debug("Illegal amount of tickets for event", data);
         } else { /* If T is reservation_id */
-            warn("Invalid cookie for reservation", data);
+            debug("Invalid cookie or reservation", data, "does not exist");
         }
 
         size_t bytes = buffer_write(buffer, BAD_REQUEST, htonl(data));
