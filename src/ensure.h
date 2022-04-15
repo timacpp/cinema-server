@@ -14,9 +14,9 @@ inline void alert(const Arg& head, const Args&... args) {
 }
 
 template<typename Arg, typename... Args>
-inline void warn(const Arg& head, const Args&... args) {
+inline void debug(const Arg& head, const Args&... args) {
 #ifndef NDEBUG
-    display("Warning", head, args...);
+    display("DEBUG", head, args...);
 #endif
 }
 
