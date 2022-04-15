@@ -20,37 +20,21 @@ namespace {
     }
 }
 
-struct ClientRequest {
-    /** Message length of GET_EVENTS request */
-    static constexpr size_t GET_EVENTS_LEN      = 1;
-
-    /** Message length of GET_RESERVATION request */
-    static constexpr size_t GET_RESERVATION_LEN = 7;
-
-    /** Message length of GET_TICKETS request */
-    static constexpr size_t GET_TICKETS_LEN     = 53;
-
-    enum Type : uint8_t {
+class TicketServer {
+public:
+    enum ClientRequest : uint8_t {
         GET_EVENTS      = 1, /** Request to list available events */
         GET_RESERVATION = 3, /** Request to reserve tickets to an event */
         GET_TICKETS     = 5  /** Request to buy reserved tickets */
     };
-};
 
-struct ServerResponse {
-    /** Maximum buffer size to store a single event information */
-    static constexpr size_t MAX_EVENT_DATA = 262;
-
-    enum Type : uint8_t {
+    enum ServerResponse : uint8_t {
         EVENTS      = 2,  /** Response to list available requests */
         RESERVATION = 4,  /** Response to confirm ticket reservation */
         TICKETS     = 6,  /** Response to send bought tickets */
         BAD_REQUEST = 255 /** Response to an invalid request */
     };
-};
 
-class TicketServer {
-public:
     static constexpr uint32_t MIN_TIMEOUT     = 1;
     static constexpr uint32_t DEFAULT_TIMEOUT = 5;
     static constexpr uint32_t MAX_TIMEOUT     = 86400;
@@ -115,6 +99,18 @@ private:
     using event_data       = std::pair<event_id, tickets_t>;
     using crypto_data      = std::pair<cookie_t, seconds_t>;
     using reservation_data = std::pair<crypto_data, event_data>;
+
+    /** Message length of GET_EVENTS request */
+    static constexpr size_t GET_EVENTS_LEN = 1;
+
+    /** Message length of GET_RESERVATION request */
+    static constexpr size_t GET_RESERVATION_LEN = 7;
+
+    /** Maximum buffer size to store a single event information */
+    static constexpr size_t MAX_EVENT_DATA = 262;
+
+    /** Message length of GET_TICKETS request */
+    static constexpr size_t GET_TICKETS_LEN     = 53;
 
     /** Server buffer size */
     static constexpr size_t MAX_DATAGRAM = 65507;
@@ -231,13 +227,13 @@ private:
     void handle_request(addr_ptr client, size_t request_len) {
         try {
             switch (buffer[0]) {
-                case ClientRequest::GET_EVENTS:
+                case GET_EVENTS:
                     handle_get_events_request(client, request_len);
                     break;
-                case ClientRequest::GET_RESERVATION:
+                case GET_RESERVATION:
                     handle_get_reservation_request(client, request_len);
                     break;
-                case ClientRequest::GET_TICKETS:
+                case GET_TICKETS:
                     handle_get_tickets_request(client, request_len);
                     break;
                 default:
@@ -249,7 +245,7 @@ private:
     }
 
     void handle_get_events_request(addr_ptr client, size_t request_len) {
-        if (request_len != ClientRequest::GET_EVENTS_LEN) {
+        if (request_len != GET_EVENTS_LEN) {
             throw std::invalid_argument("GET_EVENTS request is too long");
         }
 
@@ -257,11 +253,11 @@ private:
     }
 
     void send_events(addr_ptr client) {
-        size_t packed_bytes = buffer_write(buffer, ServerResponse::EVENTS);
+        size_t packed_bytes = buffer_write(buffer, EVENTS);
 
         /* Naively pack as many events as we can */
         for (auto& [event_id, event_info] : events) {
-            char portion[ServerResponse::MAX_EVENT_DATA];
+            char portion[MAX_EVENT_DATA];
             auto [description, tickets] = event_info;
             size_t portion_bytes = buffer_write(portion, htonl(event_id), htons(tickets),
                                                 static_cast<desclen_t>(description.size()),
@@ -277,7 +273,7 @@ private:
     }
 
     void handle_get_reservation_request(addr_ptr client, size_t request_len) {
-        if (request_len != ClientRequest::GET_RESERVATION_LEN) {
+        if (request_len != GET_RESERVATION_LEN) {
             throw std::invalid_argument("GET_EVENTS request is too long");
         }
 
@@ -299,8 +295,8 @@ private:
 
     void reserve_tickets(addr_ptr client, event_id event, tickets_t tickets) {
         auto [reservation, cookie, expiration_time] = this->create_reservation(event, tickets);
-        size_t bytes = buffer_write(buffer, ServerResponse::RESERVATION, htonl(reservation),
-                                    htonl(event), htons(tickets), cookie);
+        size_t bytes = buffer_write(buffer, RESERVATION, htonl(reservation), htonl(event),
+                                    htons(tickets), cookie);
 
         bytes += buffer_write(buffer + bytes, htobe64(expiration_time));
         this->send_response(client, bytes);
@@ -349,7 +345,7 @@ private:
     }
 
     void handle_get_tickets_request(addr_ptr client, size_t request_len) {
-        if (request_len != ClientRequest::GET_TICKETS_LEN) {
+        if (request_len != GET_TICKETS_LEN) {
             throw std::invalid_argument("GET_TICKETS request is too long");
         }
 
@@ -368,8 +364,7 @@ private:
 
     void send_tickets(addr_ptr client, reservation_id reservation,
                       tickets_t ticket_count, const cookie_t& cookie) {
-        size_t bytes = buffer_write(buffer, ServerResponse::TICKETS,
-                                    htonl(reservation), htons(ticket_count));
+        size_t bytes = buffer_write(buffer, TICKETS, htonl(reservation), htons(ticket_count));
 
         /* If client haven't sent a successful GET_TICKETS request */
         if (purchased.find(reservation) == purchased.end()) {
@@ -424,7 +419,7 @@ private:
             warn("Invalid cookie for reservation", data);
         }
 
-        size_t bytes = buffer_write(buffer, ServerResponse::BAD_REQUEST, htonl(data));
+        size_t bytes = buffer_write(buffer, BAD_REQUEST, htonl(data));
         this->send_response(client, bytes);
     }
 };
