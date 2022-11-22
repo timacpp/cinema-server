@@ -3,7 +3,7 @@ This is a UDP server for reserving cinema tickets. It is built upon raw socket c
 
 # Running the server
 
-To run the server, you one flag is required and two otehr are optional:
+To run the server, you one flag is required and two other are optional:
 
 `-p <port>` – server listening port (2022 by default)
 
@@ -29,7 +29,7 @@ The directory `bin` contains the client code compiled on two different machines.
 
 `GET_RESERVATION <event_id> <ticket_count>` - request a reservation of a given number of tickets for an event
 
-`GET_TICKETS <reservation_id> <cookie>` - request tickets for a given reservation, where cookie substitues the need for an account
+`GET_TICKETS <reservation_id> <cookie>` - request tickets for a given reservation, where cookie substitutes the need for an account
 
 # Server responses
 
@@ -45,6 +45,6 @@ The directory `bin` contains the client code compiled on two different machines.
 
 `buffer.h` - fast, generic and variadic byte stream builder
 
-`ensure.h` - logging and assertation library
+`ensure.h` - logging and assertion library
 
 `flags.h` - flag parser and validator
